@@ -3,10 +3,14 @@ import { Link } from 'react-router-dom'
 import { Sidebar } from '../components/Sidebar'
 import { Breadcrumb } from '../components/Breadcrumb'
 import {
+  getAgentPermissions,
   getOpenClawHealth,
   getTelegramWorkerStatus,
+  updateAgentPermission,
+  type AgentPermissions,
   type OpenClawHealth,
   type TelegramWorkerStatus,
+  type ToolPermissionState,
 } from '../lib/hiveBackend'
 import type { Agent } from '../types/agent'
 
@@ -19,6 +23,22 @@ type DashboardPageProps = {
 
 const ITEMS_PER_PAGE = 6
 const STATUS_REFRESH_MS = 5000
+const TOOL_LABELS: Record<string, string> = {
+  memory_read: 'Read memory',
+  memory_write: 'Write memory',
+  pulse: 'Pulse',
+  openclaw_chat: 'OpenClaw chat',
+  telegram_send: 'Telegram send',
+  brave_search: 'Brave search',
+  gmail: 'Gmail',
+  calendar: 'Calendar',
+  notion: 'Notion',
+  todo: 'Todo',
+  notes: 'Notes',
+  filesystem: 'Filesystem',
+  browser: 'Browser',
+  shell: 'Shell',
+}
 
 export function DashboardPage({
   userEmail,
@@ -37,7 +57,12 @@ export function DashboardPage({
   const [workerStatuses, setWorkerStatuses] = useState<
     Record<string, TelegramWorkerStatus>
   >({})
+  const [permissionsByAgent, setPermissionsByAgent] = useState<
+    Record<string, AgentPermissions>
+  >({})
   const [statusError, setStatusError] = useState('')
+  const [permissionError, setPermissionError] = useState('')
+  const [savingPermission, setSavingPermission] = useState<string | null>(null)
 
   const linkedTokens = agents.filter((agent) => Boolean(agent.botToken)).length
   const connectedAgents = agents.filter((agent) => {
@@ -86,6 +111,46 @@ export function DashboardPage({
     return () => {
       cancelled = true
       window.clearInterval(intervalId)
+    }
+  }, [agents])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function refreshPermissions() {
+      if (agents.length === 0) {
+        setPermissionsByAgent({})
+        return
+      }
+
+      try {
+        const nextPermissions = await Promise.all(
+          agents.map(async (agent) => {
+            const agentId = agent.hiveAgentId || agent.id
+            const permissions = await getAgentPermissions(agentId)
+            return [agentId, permissions] as const
+          }),
+        )
+
+        if (cancelled) {
+          return
+        }
+
+        setPermissionsByAgent(Object.fromEntries(nextPermissions))
+        setPermissionError('')
+      } catch (error) {
+        if (!cancelled) {
+          setPermissionError(
+            error instanceof Error ? error.message : 'Could not load permissions.',
+          )
+        }
+      }
+    }
+
+    void refreshPermissions()
+
+    return () => {
+      cancelled = true
     }
   }, [agents])
 
@@ -165,6 +230,32 @@ export function DashboardPage({
       )
     } finally {
       setDeletingAgentId(null)
+    }
+  }
+
+  const handlePermissionChange = async (
+    agentId: string,
+    toolName: string,
+    nextState: ToolPermissionState,
+  ) => {
+    setPermissionError('')
+    setSavingPermission(`${agentId}:${toolName}`)
+    try {
+      const nextPermissions = await updateAgentPermission(
+        agentId,
+        toolName,
+        nextState,
+      )
+      setPermissionsByAgent((current) => ({
+        ...current,
+        [agentId]: nextPermissions,
+      }))
+    } catch (error) {
+      setPermissionError(
+        error instanceof Error ? error.message : 'Could not update permission.',
+      )
+    } finally {
+      setSavingPermission(null)
     }
   }
 
@@ -278,6 +369,7 @@ export function DashboardPage({
               <h2>Available agents</h2>
               {deleteError && <p className="status status-error">{deleteError}</p>}
               {statusError && <p className="status status-error">{statusError}</p>}
+              {permissionError && <p className="status status-error">{permissionError}</p>}
               {filteredAgents.length === 0 ? (
                 <div className="empty-state">
                   <p className="subtle">
@@ -303,6 +395,7 @@ export function DashboardPage({
                       const workerPid = workerStatus?.pid ?? agent.workerPid
                       const openclawReachable =
                         openclawHealth?.reachable ?? agent.openclawReachable
+                      const permissions = permissionsByAgent[agentId]
 
                       return (
                       <li key={agent.id} className="agent-item">
@@ -329,6 +422,44 @@ export function DashboardPage({
                             Telegram worker: {workerRunning && workerPid ? `✓ PID ${workerPid}` : '✕ Not running'}
                           </p>
                         </div>
+
+                        <details className="agent-permissions">
+                          <summary>Tool permissions</summary>
+                          {permissions ? (
+                            <div className="permission-grid">
+                              {permissions.available_tools.map((toolName) => {
+                                const savingKey = `${agentId}:${toolName}`
+                                return (
+                                  <label className="permission-row" key={toolName}>
+                                    <span>{TOOL_LABELS[toolName] || toolName}</span>
+                                    <select
+                                      value={permissions.tool_permissions[toolName]}
+                                      disabled={savingPermission === savingKey}
+                                      onChange={(event) => {
+                                        void handlePermissionChange(
+                                          agentId,
+                                          toolName,
+                                          event.target.value as ToolPermissionState,
+                                        )
+                                      }}
+                                    >
+                                      {permissions.states.map((state) => (
+                                        <option key={state} value={state}>
+                                          {state}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                )
+                              })}
+                            </div>
+                          ) : (
+                            <p className="subtle">Loading permissions...</p>
+                          )}
+                          <p className="subtle permission-help">
+                            Telegram: /permission allow memory_read
+                          </p>
+                        </details>
 
                         {/* Copy Options */}
                         <div className="agent-copy-options">

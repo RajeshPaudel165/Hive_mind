@@ -3,12 +3,13 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 import memory_store
+import auth
 import dedalus_runtime
 import openclaw_manager
 import telegram_worker_manager
@@ -89,6 +90,10 @@ class OpenClawTestInput(BaseModel):
 
 class RuntimeEnsureInput(BaseModel):
     user_id: str = Field(min_length=1, max_length=200)
+
+
+class ToolPermissionInput(BaseModel):
+    permissions: dict[str, str] = Field(default_factory=dict)
 
 
 def get_session_or_404(pairing_code: str) -> dict[str, Any]:
@@ -195,6 +200,22 @@ def delete_user_runtime(user_id: str) -> dict[str, Any]:
     return dedalus_runtime.destroy_user_runtime(user_id)
 
 
+@app.post("/users/{user_id}/runtime/bootstrap")
+def bootstrap_user_runtime(user_id: str) -> dict[str, Any]:
+    try:
+        return dedalus_runtime.start_user_runtime_bootstrap(user_id)
+    except dedalus_runtime.DedalusRuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/users/{user_id}/runtime/bootstrap")
+def get_user_runtime_bootstrap(user_id: str) -> dict[str, Any]:
+    try:
+        return dedalus_runtime.get_user_runtime_bootstrap_status(user_id)
+    except dedalus_runtime.DedalusRuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.get("/")
 def root() -> dict[str, Any]:
     return {
@@ -214,6 +235,8 @@ def root() -> dict[str, Any]:
             "user_runtime": "GET /users/{user_id}/runtime",
             "ensure_user_runtime": "POST /users/{user_id}/runtime/ensure",
             "delete_user_runtime": "DELETE /users/{user_id}/runtime",
+            "bootstrap_user_runtime": "POST /users/{user_id}/runtime/bootstrap",
+            "bootstrap_status": "GET /users/{user_id}/runtime/bootstrap",
             "list_agents": "GET /agents",
             "create_agent": "POST /agents",
             "get_agent": "GET /agents/{agent_id}",
@@ -615,23 +638,65 @@ def dashboard() -> str:
 </html>"""
 
 
+def authenticated_user_id(current_user: dict[str, Any]) -> str | None:
+    user_id = current_user.get("uid")
+    return str(user_id) if user_id else None
+
+
+def require_owned_agent(agent_id: str, current_user: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return memory_store.get_agent_for_user(
+            agent_id,
+            authenticated_user_id(current_user),
+        )
+    except memory_store.UnknownSession:
+        raise HTTPException(status_code=404, detail="Unknown agent")
+
+
+def require_tool_permission(agent_id: str, tool_name: str) -> None:
+    try:
+        state = memory_store.get_tool_permission(agent_id, tool_name)
+    except memory_store.UnknownSession:
+        raise HTTPException(status_code=404, detail="Unknown agent")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if state == "allow":
+        return
+    if state == "ask":
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"{tool_name} requires approval. Approval queues are not enabled yet."
+            ),
+        )
+    raise HTTPException(status_code=403, detail=f"{tool_name} is denied.")
+
+
 @app.get("/agents")
-def list_agents() -> dict[str, Any]:
-    return {"agents": memory_store.list_agents()}
+def list_agents(
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
+) -> dict[str, Any]:
+    return {"agents": memory_store.list_agents(authenticated_user_id(current_user))}
 
 
 @app.post("/agents")
-def create_agent(payload: AgentInput) -> dict[str, Any]:
+def create_agent(
+    payload: AgentInput,
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
+) -> dict[str, Any]:
+    owner_user_id = authenticated_user_id(current_user) or payload.user_id
+    owner_user_name = current_user.get("email") or payload.user_name
     user_runtime = None
-    if payload.user_id:
+    if owner_user_id:
         try:
-            user_runtime = dedalus_runtime.ensure_user_runtime(payload.user_id)
+            user_runtime = dedalus_runtime.ensure_user_runtime(owner_user_id)
         except dedalus_runtime.DedalusRuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc))
 
     agent = memory_store.create_agent(
-        user_id=payload.user_id,
-        user_name=payload.user_name,
+        user_id=owner_user_id,
+        user_name=owner_user_name,
         agent_name=payload.agent_name,
         agent_role=payload.agent_role,
         telegram_bot_token=payload.telegram_bot_token,
@@ -661,36 +726,42 @@ def create_agent(payload: AgentInput) -> dict[str, Any]:
 
 
 @app.get("/agents/{agent_id}/telegram/status")
-def get_agent_telegram_status(agent_id: str) -> dict[str, Any]:
-    try:
-        memory_store.get_agent(agent_id)
-    except memory_store.UnknownSession:
-        raise HTTPException(status_code=404, detail="Unknown agent")
+def get_agent_telegram_status(
+    agent_id: str,
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
+) -> dict[str, Any]:
+    require_owned_agent(agent_id, current_user)
     return telegram_worker_manager.get_worker_status(agent_id)
 
 
 @app.post("/agents/{agent_id}/telegram/start")
-def start_agent_telegram_worker(agent_id: str) -> dict[str, Any]:
-    try:
-        memory_store.get_agent(agent_id)
-    except memory_store.UnknownSession:
-        raise HTTPException(status_code=404, detail="Unknown agent")
+def start_agent_telegram_worker(
+    agent_id: str,
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
+) -> dict[str, Any]:
+    require_owned_agent(agent_id, current_user)
     return telegram_worker_manager.start_worker(agent_id)
 
 
 @app.post("/agents/{agent_id}/telegram/stop")
-def stop_agent_telegram_worker(agent_id: str) -> dict[str, Any]:
-    try:
-        memory_store.get_agent(agent_id)
-    except memory_store.UnknownSession:
-        raise HTTPException(status_code=404, detail="Unknown agent")
+def stop_agent_telegram_worker(
+    agent_id: str,
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
+) -> dict[str, Any]:
+    require_owned_agent(agent_id, current_user)
     return telegram_worker_manager.stop_worker(agent_id)
 
 
 @app.get("/agents/{agent_id}")
-def get_agent(agent_id: str) -> dict[str, Any]:
+def get_agent(
+    agent_id: str,
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
+) -> dict[str, Any]:
     try:
-        agent = memory_store.get_agent(agent_id)
+        agent = memory_store.get_agent_for_user(
+            agent_id,
+            authenticated_user_id(current_user),
+        )
         context = memory_store.get_context(agent_id)
     except memory_store.UnknownSession:
         raise HTTPException(status_code=404, detail="Unknown agent")
@@ -698,7 +769,11 @@ def get_agent(agent_id: str) -> dict[str, Any]:
 
 
 @app.delete("/agents/{agent_id}")
-def delete_agent(agent_id: str) -> dict[str, Any]:
+def delete_agent(
+    agent_id: str,
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
+) -> dict[str, Any]:
+    require_owned_agent(agent_id, current_user)
     worker_status = telegram_worker_manager.stop_worker(agent_id)
     try:
         deleted = memory_store.delete_agent(agent_id)
@@ -711,8 +786,58 @@ def delete_agent(agent_id: str) -> dict[str, Any]:
     }
 
 
+@app.get("/agents/{agent_id}/permissions")
+def get_agent_permissions(
+    agent_id: str,
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
+) -> dict[str, Any]:
+    require_owned_agent(agent_id, current_user)
+    try:
+        return memory_store.get_agent_permissions(agent_id)
+    except memory_store.UnknownSession:
+        raise HTTPException(status_code=404, detail="Unknown agent")
+
+
+@app.put("/agents/{agent_id}/permissions")
+def update_agent_permissions(
+    agent_id: str,
+    payload: ToolPermissionInput,
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
+) -> dict[str, Any]:
+    require_owned_agent(agent_id, current_user)
+    changed_by = authenticated_user_id(current_user) or "local-dashboard"
+    try:
+        return memory_store.update_agent_permissions(
+            agent_id,
+            payload.permissions,
+            changed_by=changed_by,
+        )
+    except memory_store.UnknownSession:
+        raise HTTPException(status_code=404, detail="Unknown agent")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/agents/{agent_id}/permissions/reset")
+def reset_agent_permissions(
+    agent_id: str,
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
+) -> dict[str, Any]:
+    require_owned_agent(agent_id, current_user)
+    changed_by = authenticated_user_id(current_user) or "local-dashboard"
+    try:
+        return memory_store.reset_agent_permissions(agent_id, changed_by=changed_by)
+    except memory_store.UnknownSession:
+        raise HTTPException(status_code=404, detail="Unknown agent")
+
+
 @app.get("/agents/{agent_id}/context")
-def get_agent_context(agent_id: str) -> dict[str, Any]:
+def get_agent_context(
+    agent_id: str,
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
+) -> dict[str, Any]:
+    require_owned_agent(agent_id, current_user)
+    require_tool_permission(agent_id, "memory_read")
     try:
         return memory_store.get_context(agent_id)
     except memory_store.UnknownSession:
@@ -720,7 +845,13 @@ def get_agent_context(agent_id: str) -> dict[str, Any]:
 
 
 @app.post("/agents/{agent_id}/ingest")
-def ingest_agent_dump(agent_id: str, payload: IngestInput) -> dict[str, Any]:
+def ingest_agent_dump(
+    agent_id: str,
+    payload: IngestInput,
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
+) -> dict[str, Any]:
+    require_owned_agent(agent_id, current_user)
+    require_tool_permission(agent_id, "memory_write")
     try:
         memory_store.ingest_dump(
             agent_id,
@@ -735,7 +866,13 @@ def ingest_agent_dump(agent_id: str, payload: IngestInput) -> dict[str, Any]:
 
 
 @app.post("/agents/{agent_id}/memory/search")
-def search_agent_memory(agent_id: str, payload: MemorySearchInput) -> dict[str, Any]:
+def search_agent_memory(
+    agent_id: str,
+    payload: MemorySearchInput,
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
+) -> dict[str, Any]:
+    require_owned_agent(agent_id, current_user)
+    require_tool_permission(agent_id, "memory_read")
     try:
         return memory_store.search_memory(
             agent_id,
@@ -747,7 +884,12 @@ def search_agent_memory(agent_id: str, payload: MemorySearchInput) -> dict[str, 
 
 
 @app.post("/agents/{agent_id}/memory/backfill")
-def backfill_agent_memory(agent_id: str) -> dict[str, Any]:
+def backfill_agent_memory(
+    agent_id: str,
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
+) -> dict[str, Any]:
+    require_owned_agent(agent_id, current_user)
+    require_tool_permission(agent_id, "memory_write")
     try:
         return memory_store.backfill_session_to_mempalace(agent_id)
     except memory_store.UnknownSession:
@@ -755,7 +897,12 @@ def backfill_agent_memory(agent_id: str) -> dict[str, Any]:
 
 
 @app.post("/agents/{agent_id}/pulse")
-def create_agent_pulse_preview(agent_id: str) -> dict[str, Any]:
+def create_agent_pulse_preview(
+    agent_id: str,
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
+) -> dict[str, Any]:
+    require_owned_agent(agent_id, current_user)
+    require_tool_permission(agent_id, "pulse")
     return create_pulse_preview(agent_id)
 
 
@@ -798,6 +945,7 @@ def activate_telegram(pairing_code: str) -> dict[str, Any]:
 
 @app.post("/sessions/{pairing_code}/goals")
 def add_goal(pairing_code: str, payload: GoalInput) -> dict[str, Any]:
+    require_tool_permission(pairing_code, "memory_write")
     try:
         goal = memory_store.add_goal(pairing_code, payload.goal)
     except memory_store.UnknownSession:
@@ -807,6 +955,7 @@ def add_goal(pairing_code: str, payload: GoalInput) -> dict[str, Any]:
 
 @app.post("/sessions/{pairing_code}/ingest")
 def ingest_dump(pairing_code: str, payload: IngestInput) -> dict[str, Any]:
+    require_tool_permission(pairing_code, "memory_write")
     try:
         memory_store.ingest_dump(
             pairing_code,
@@ -822,6 +971,7 @@ def ingest_dump(pairing_code: str, payload: IngestInput) -> dict[str, Any]:
 
 @app.get("/sessions/{pairing_code}/context")
 def get_context(pairing_code: str) -> dict[str, Any]:
+    require_tool_permission(pairing_code, "memory_read")
     try:
         return memory_store.get_context(pairing_code)
     except memory_store.UnknownSession:
@@ -830,6 +980,7 @@ def get_context(pairing_code: str) -> dict[str, Any]:
 
 @app.post("/sessions/{pairing_code}/memory/search")
 def search_memory(pairing_code: str, payload: MemorySearchInput) -> dict[str, Any]:
+    require_tool_permission(pairing_code, "memory_read")
     try:
         return memory_store.search_memory(
             pairing_code,
@@ -842,6 +993,7 @@ def search_memory(pairing_code: str, payload: MemorySearchInput) -> dict[str, An
 
 @app.post("/sessions/{pairing_code}/memory/backfill")
 def backfill_memory(pairing_code: str) -> dict[str, Any]:
+    require_tool_permission(pairing_code, "memory_write")
     try:
         return memory_store.backfill_session_to_mempalace(pairing_code)
     except memory_store.UnknownSession:
@@ -850,6 +1002,7 @@ def backfill_memory(pairing_code: str) -> dict[str, Any]:
 
 @app.post("/sessions/{pairing_code}/pulse")
 def create_pulse_preview(pairing_code: str) -> dict[str, Any]:
+    require_tool_permission(pairing_code, "pulse")
     session = get_session_or_404(pairing_code)
     goals = session["goals"]
     dumps = session["dumps"]
@@ -862,6 +1015,7 @@ def create_pulse_preview(pairing_code: str) -> dict[str, Any]:
     enriched_dumps = [*dumps]
     mempalace_results = None
     try:
+        require_tool_permission(pairing_code, "memory_read")
         mempalace_results = memory_store.search_memory(pairing_code, latest_goal, n_results=3)
         for hit in mempalace_results.get("results", []):
             enriched_dumps.append(
@@ -884,9 +1038,12 @@ def create_pulse_preview(pairing_code: str) -> dict[str, Any]:
     error = None
 
     try:
+        require_tool_permission(pairing_code, "openclaw_chat")
         session_for_prompt = {**session, "dumps": enriched_dumps}
         message = generate_pulse_message(session_for_prompt)
         delivery = "openclaw_preview"
+    except HTTPException as exc:
+        error = str(exc.detail)
     except OpenClawUnavailable as exc:
         error = str(exc)
 

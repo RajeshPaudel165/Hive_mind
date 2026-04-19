@@ -22,6 +22,23 @@ def resolve_backend_path(value: str) -> Path:
 
 STATE_PATH = resolve_backend_path(os.getenv("HIVE_STATE_PATH", "data/hive_state.json"))
 MEMPALACE_ENABLED = os.getenv("HIVE_MEMPALACE_ENABLED", "true").lower() == "true"
+TOOL_PERMISSION_STATES = {"allow", "ask", "deny"}
+DEFAULT_TOOL_PERMISSIONS = {
+    "memory_read": "allow",
+    "memory_write": "allow",
+    "pulse": "allow",
+    "openclaw_chat": "allow",
+    "telegram_send": "allow",
+    "brave_search": "ask",
+    "gmail": "ask",
+    "calendar": "ask",
+    "notion": "ask",
+    "todo": "allow",
+    "notes": "allow",
+    "filesystem": "deny",
+    "browser": "deny",
+    "shell": "deny",
+}
 
 
 class UnknownSession(KeyError):
@@ -47,8 +64,10 @@ def load_state() -> dict[str, Any]:
 
 def save_state(state: dict[str, Any]) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with STATE_PATH.open("w", encoding="utf-8") as handle:
-        json.dump(state, handle, indent=2, sort_keys=True)
+    payload = json.dumps(state, indent=2, sort_keys=True, default=str)
+    temp_path = STATE_PATH.with_suffix(f"{STATE_PATH.suffix}.tmp")
+    temp_path.write_text(payload, encoding="utf-8")
+    temp_path.replace(STATE_PATH)
 
 
 def create_session(user_name: str) -> dict[str, Any]:
@@ -59,7 +78,26 @@ def public_agent(agent: dict[str, Any]) -> dict[str, Any]:
     safe = dict(agent)
     token = safe.pop("telegram_bot_token", None)
     safe["telegram_bot_configured"] = bool(token)
+    safe["tool_permissions"] = normalize_tool_permissions(
+        safe.get("tool_permissions")
+    )
     return safe
+
+
+def normalize_tool_permissions(
+    permissions: dict[str, Any] | None,
+) -> dict[str, str]:
+    normalized = dict(DEFAULT_TOOL_PERMISSIONS)
+    if not permissions:
+        return normalized
+
+    for tool_name, state in permissions.items():
+        if tool_name not in DEFAULT_TOOL_PERMISSIONS:
+            continue
+        state_text = str(state).lower()
+        if state_text in TOOL_PERMISSION_STATES:
+            normalized[tool_name] = state_text
+    return normalized
 
 
 def create_agent(
@@ -88,6 +126,8 @@ def create_agent(
         "telegram_bot_token": telegram_bot_token,
         "telegram_chat_id": None,
         "openclaw_agent_id": None,
+        "tool_permissions": dict(DEFAULT_TOOL_PERMISSIONS),
+        "permission_audit": [],
         "created_at": timestamp,
         "updated_at": timestamp,
     }
@@ -111,9 +151,14 @@ def create_agent(
     return public_agent(agent)
 
 
-def list_agents() -> list[dict[str, Any]]:
+def list_agents(user_id: str | None = None) -> list[dict[str, Any]]:
     state = load_state()
-    return [public_agent(agent) for agent in state["agents"].values()]
+    agents = state["agents"].values()
+    if user_id:
+        agents = [
+            agent for agent in agents if str(agent.get("user_id")) == str(user_id)
+        ]
+    return [public_agent(agent) for agent in agents]
 
 
 def get_agent(agent_id: str, include_token: bool = False) -> dict[str, Any]:
@@ -124,6 +169,104 @@ def get_agent(agent_id: str, include_token: bool = False) -> dict[str, Any]:
     if include_token:
         return agent
     return public_agent(agent)
+
+
+def get_agent_for_user(
+    agent_id: str,
+    user_id: str | None,
+    include_token: bool = False,
+) -> dict[str, Any]:
+    agent = get_agent(agent_id, include_token=True)
+    if user_id and str(agent.get("user_id")) != str(user_id):
+        raise UnknownSession(agent_id)
+    if include_token:
+        return agent
+    return public_agent(agent)
+
+
+def get_agent_permissions(agent_id: str) -> dict[str, Any]:
+    agent = get_agent(agent_id, include_token=True)
+    permissions = normalize_tool_permissions(agent.get("tool_permissions"))
+    return {
+        "agent_id": agent_id,
+        "tool_permissions": permissions,
+        "available_tools": list(DEFAULT_TOOL_PERMISSIONS.keys()),
+        "states": sorted(TOOL_PERMISSION_STATES),
+        "audit": agent.get("permission_audit", [])[-25:],
+    }
+
+
+def update_agent_permissions(
+    agent_id: str,
+    updates: dict[str, str],
+    changed_by: str = "system",
+) -> dict[str, Any]:
+    invalid_tools = [
+        tool_name
+        for tool_name in updates
+        if tool_name not in DEFAULT_TOOL_PERMISSIONS
+    ]
+    if invalid_tools:
+        raise ValueError(f"Unknown tool permission(s): {', '.join(invalid_tools)}")
+
+    invalid_states = [
+        state
+        for state in updates.values()
+        if str(state).lower() not in TOOL_PERMISSION_STATES
+    ]
+    if invalid_states:
+        raise ValueError("Permission state must be one of: allow, ask, deny")
+
+    state = load_state()
+    agent = state["agents"].get(agent_id)
+    if agent is None:
+        raise UnknownSession(agent_id)
+
+    permissions = normalize_tool_permissions(agent.get("tool_permissions"))
+    timestamp = now_iso()
+    audit = list(agent.get("permission_audit") or [])
+
+    for tool_name, next_state in updates.items():
+        previous_state = permissions.get(tool_name, DEFAULT_TOOL_PERMISSIONS[tool_name])
+        next_state = str(next_state).lower()
+        permissions[tool_name] = next_state
+        if previous_state != next_state:
+            audit.append(
+                {
+                    "tool": tool_name,
+                    "from": previous_state,
+                    "to": next_state,
+                    "changed_by": changed_by,
+                    "created_at": timestamp,
+                }
+            )
+
+    agent["tool_permissions"] = permissions
+    agent["permission_audit"] = audit[-100:]
+    agent["updated_at"] = timestamp
+    state["agents"][agent_id] = agent
+    save_state(state)
+    return get_agent_permissions(agent_id)
+
+
+def reset_agent_permissions(agent_id: str, changed_by: str = "system") -> dict[str, Any]:
+    return update_agent_permissions(
+        agent_id,
+        dict(DEFAULT_TOOL_PERMISSIONS),
+        changed_by=changed_by,
+    )
+
+
+def get_tool_permission(agent_id: str, tool_name: str) -> str:
+    if tool_name not in DEFAULT_TOOL_PERMISSIONS:
+        raise ValueError(f"Unknown tool permission: {tool_name}")
+    agent = get_agent(agent_id, include_token=True)
+    permissions = normalize_tool_permissions(agent.get("tool_permissions"))
+    return permissions[tool_name]
+
+
+def is_tool_allowed(agent_id: str, tool_name: str) -> bool:
+    return get_tool_permission(agent_id, tool_name) == "allow"
 
 
 def get_agent_token(agent_id: str) -> str | None:

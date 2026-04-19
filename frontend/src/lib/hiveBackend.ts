@@ -1,9 +1,15 @@
 import type { Agent } from '../types/agent'
+import { firebaseAuth } from './firebase'
 
 const DEFAULT_HIVE_API_BASE = 'http://127.0.0.1:8010'
 
 export const hiveApiBase =
   import.meta.env.VITE_HIVE_API_BASE?.replace(/\/$/, '') || DEFAULT_HIVE_API_BASE
+
+async function authHeaders(): Promise<HeadersInit> {
+  const token = await firebaseAuth?.currentUser?.getIdToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
 
 type CreateHiveAgentInput = {
   userId: string
@@ -40,6 +46,7 @@ type HiveAgentResponse = {
     pid?: number | null
     log_path?: string
   }
+  tool_permissions?: Record<string, ToolPermissionState>
 }
 
 export type OpenClawHealth = {
@@ -57,12 +64,28 @@ export type TelegramWorkerStatus = {
   log_path?: string
 }
 
+export type ToolPermissionState = 'allow' | 'ask' | 'deny'
+
+export type AgentPermissions = {
+  agent_id: string
+  tool_permissions: Record<string, ToolPermissionState>
+  available_tools: string[]
+  states: ToolPermissionState[]
+  audit?: Array<{
+    tool: string
+    from: ToolPermissionState
+    to: ToolPermissionState
+    changed_by: string
+    created_at: string
+  }>
+}
+
 export async function createHiveAgent(
   input: CreateHiveAgentInput,
 ): Promise<Agent> {
   const response = await fetch(`${hiveApiBase}/agents`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
     body: JSON.stringify({
       user_id: input.userId,
       user_name: input.userEmail,
@@ -115,6 +138,7 @@ export async function createHiveAgent(
     openclawPid: data.openclaw?.managed_pid ?? null,
     workerPid: data.telegram_worker?.pid ?? null,
     workerLogPath: data.telegram_worker?.log_path,
+    toolPermissions: data.tool_permissions,
   }
 }
 
@@ -134,7 +158,9 @@ export async function getOpenClawHealth(): Promise<OpenClawHealth> {
 export async function getTelegramWorkerStatus(
   agentId: string,
 ): Promise<TelegramWorkerStatus> {
-  const response = await fetch(`${hiveApiBase}/agents/${agentId}/telegram/status`)
+  const response = await fetch(`${hiveApiBase}/agents/${agentId}/telegram/status`, {
+    headers: await authHeaders(),
+  })
   const data = (await response.json().catch(() => null)) as
     | TelegramWorkerStatus
     | { detail?: string }
@@ -159,6 +185,7 @@ export async function getTelegramWorkerStatus(
 export async function deleteHiveAgent(agentId: string): Promise<void> {
   const response = await fetch(`${hiveApiBase}/agents/${agentId}`, {
     method: 'DELETE',
+    headers: await authHeaders(),
   })
 
   if (response.status === 404) {
@@ -171,4 +198,62 @@ export async function deleteHiveAgent(agentId: string): Promise<void> {
       | null
     throw new Error(data?.detail || `HIVE backend returned ${response.status}`)
   }
+}
+
+
+export async function getAgentPermissions(
+  agentId: string,
+): Promise<AgentPermissions> {
+  const response = await fetch(`${hiveApiBase}/agents/${agentId}/permissions`, {
+    headers: await authHeaders(),
+  })
+  const data = (await response.json().catch(() => null)) as
+    | AgentPermissions
+    | { detail?: string }
+    | null
+
+  if (!response.ok) {
+    const detail =
+      data && 'detail' in data && typeof data.detail === 'string'
+        ? data.detail
+        : `HIVE backend returned ${response.status}`
+    throw new Error(detail)
+  }
+
+  if (!data || !('tool_permissions' in data)) {
+    throw new Error('HIVE backend returned invalid permission data.')
+  }
+
+  return data
+}
+
+
+export async function updateAgentPermission(
+  agentId: string,
+  toolName: string,
+  state: ToolPermissionState,
+): Promise<AgentPermissions> {
+  const response = await fetch(`${hiveApiBase}/agents/${agentId}/permissions`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify({ permissions: { [toolName]: state } }),
+  })
+  const data = (await response.json().catch(() => null)) as
+    | AgentPermissions
+    | { detail?: string }
+    | null
+
+  if (!response.ok) {
+    const detail =
+      data && 'detail' in data && typeof data.detail === 'string'
+        ? data.detail
+        : `HIVE backend returned ${response.status}`
+    throw new Error(detail)
+  }
+
+  if (!data || !('tool_permissions' in data)) {
+    throw new Error('HIVE backend returned invalid permission data.')
+  }
+
+  return data
 }

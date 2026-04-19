@@ -22,4 +22,5 @@ export type Agent = {
   openclawPid?: number | null
   workerPid?: number | null
   workerLogPath?: string
+  toolPermissions?: Record<string, 'allow' | 'ask' | 'deny'>
 }
