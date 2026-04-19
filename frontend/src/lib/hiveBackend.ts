@@ -1,7 +1,7 @@
 import type { Agent } from '../types/agent'
 import { firebaseAuth } from './firebase'
 
-const DEFAULT_HIVE_API_BASE = 'http://127.0.0.1:8010'
+const DEFAULT_HIVE_API_BASE = import.meta.env.DEFAULT_HIVE_API_BASE
 
 export const hiveApiBase =
   import.meta.env.VITE_HIVE_API_BASE?.replace(/\/$/, '') || DEFAULT_HIVE_API_BASE
