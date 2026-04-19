@@ -1,7 +1,7 @@
 import type { Agent } from '../types/agent'
 import { firebaseAuth } from './firebase'
 
-const DEFAULT_HIVE_API_BASE = import.meta.env.DEFAULT_HIVE_API_BASE
+const DEFAULT_HIVE_API_BASE = 'http://127.0.0.1:8010'
 
 export const hiveApiBase =
   import.meta.env.VITE_HIVE_API_BASE?.replace(/\/$/, '') || DEFAULT_HIVE_API_BASE
@@ -26,6 +26,7 @@ type HiveAgentResponse = {
   agent_name: string
   agent_role: string
   telegram_bot_configured: boolean
+  telegram_bot_id?: string
   user_runtime?: {
     provider?: string
     machine_id?: string | null
@@ -47,6 +48,10 @@ type HiveAgentResponse = {
     log_path?: string
   }
   tool_permissions?: Record<string, ToolPermissionState>
+}
+
+type ListHiveAgentsResponse = {
+  agents: HiveAgentResponse[]
 }
 
 export type OpenClawHealth = {
@@ -114,12 +119,44 @@ export async function createHiveAgent(
     throw new Error('HIVE backend returned an invalid agent response.')
   }
 
-  const botId = input.telegramBotToken.split(':')[0] ?? ''
+  return hiveAgentToAgent(data, { telegramBotToken: input.telegramBotToken })
+}
+
+export async function listHiveAgents(): Promise<Agent[]> {
+  const response = await fetch(`${hiveApiBase}/agents`, {
+    headers: await authHeaders(),
+  })
+  const data = (await response.json().catch(() => null)) as
+    | ListHiveAgentsResponse
+    | { detail?: string }
+    | null
+
+  if (!response.ok) {
+    const detail =
+      data && 'detail' in data && typeof data.detail === 'string'
+        ? data.detail
+        : `HIVE backend returned ${response.status}`
+    throw new Error(detail)
+  }
+
+  if (!data || !('agents' in data) || !Array.isArray(data.agents)) {
+    throw new Error('HIVE backend returned an invalid agent list.')
+  }
+
+  return data.agents.map((agent) => hiveAgentToAgent(agent))
+}
+
+function hiveAgentToAgent(
+  data: HiveAgentResponse,
+  options: { telegramBotToken?: string } = {},
+): Agent {
+  const botToken = options.telegramBotToken ?? ''
+  const botId = data.telegram_bot_id || botToken.split(':')[0] || ''
 
   return {
     id: data.agent_id,
     hiveAgentId: data.agent_id,
-    userId: data.user_id ?? input.userId,
+    userId: data.user_id ?? null,
     name: data.agent_name,
     role: data.agent_role,
     runtimeProvider: data.user_runtime?.provider,
@@ -127,7 +164,7 @@ export async function createHiveAgent(
     runtimeStatus: data.user_runtime?.status,
     botId,
     botUsername: '',
-    botToken: input.telegramBotToken,
+    botToken,
     deliveryStatus: data.telegram_bot_configured ? 'sent' : 'pending',
     telegramConnectionStatus: data.telegram_worker?.running
       ? 'connected'

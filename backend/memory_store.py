@@ -78,6 +78,7 @@ def public_agent(agent: dict[str, Any]) -> dict[str, Any]:
     safe = dict(agent)
     token = safe.pop("telegram_bot_token", None)
     safe["telegram_bot_configured"] = bool(token)
+    safe["telegram_bot_id"] = token.split(":", maxsplit=1)[0] if token else ""
     safe["tool_permissions"] = normalize_tool_permissions(
         safe.get("tool_permissions")
     )

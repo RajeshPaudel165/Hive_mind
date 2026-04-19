@@ -211,6 +211,7 @@ export async function saveAgentToFirebase(params: {
       openclawPid: agent.openclawPid,
       workerPid: agent.workerPid,
       workerLogPath: agent.workerLogPath,
+      toolPermissions: agent.toolPermissions,
       ownerEmail: userEmail,
       updatedAt: serverTimestamp(),
       createdAt: serverTimestamp(),

@@ -19,7 +19,7 @@ import { LandingPage } from './pages/LandingPage'
 import { LoginPage } from './pages/LoginPage'
 import { SettingsProfilePage } from './pages/SettingsProfilePage'
 import { SettingsAPIPage } from './pages/SettingsAPIPage'
-import { deleteHiveAgent } from './lib/hiveBackend'
+import { deleteHiveAgent, listHiveAgents } from './lib/hiveBackend'
 import type { Agent } from './types/agent'
 import './App.css'
 
@@ -45,8 +45,11 @@ function App() {
 
       void (async () => {
         try {
-          const remoteAgents = await loadAgentsFromFirebase(user.uid)
-          setAgents(remoteAgents)
+          const [backendAgents, firebaseAgents] = await Promise.all([
+            listHiveAgents(),
+            loadAgentsFromFirebase(user.uid).catch(() => []),
+          ])
+          setAgents(mergeBackendAgentsWithFirebase(backendAgents, firebaseAgents))
         } catch {
           setAgents(loadAgentsFromStorage(user.email ?? user.uid))
         } finally {
@@ -162,6 +165,33 @@ function App() {
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
+}
+
+function mergeBackendAgentsWithFirebase(
+  backendAgents: Agent[],
+  firebaseAgents: Agent[],
+): Agent[] {
+  const firebaseByHiveId = new Map(
+    firebaseAgents.map((agent) => [agent.hiveAgentId || agent.id, agent]),
+  )
+
+  return backendAgents.map((backendAgent) => {
+    const agentId = backendAgent.hiveAgentId || backendAgent.id
+    const firebaseAgent = firebaseByHiveId.get(agentId)
+    if (!firebaseAgent) {
+      return backendAgent
+    }
+
+    return {
+      ...firebaseAgent,
+      ...backendAgent,
+      botToken: firebaseAgent.botToken || backendAgent.botToken,
+      botUsername: firebaseAgent.botUsername || backendAgent.botUsername,
+      messagesSent: firebaseAgent.messagesSent,
+      averageResponseTime: firebaseAgent.averageResponseTime,
+      lastActivityAt: firebaseAgent.lastActivityAt,
+    }
+  })
 }
 
 export default App

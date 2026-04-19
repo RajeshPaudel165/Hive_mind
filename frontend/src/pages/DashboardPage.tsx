@@ -81,8 +81,12 @@ export function DashboardPage({
           Promise.all(
             agents.map(async (agent) => {
               const agentId = agent.hiveAgentId || agent.id
-              const status = await getTelegramWorkerStatus(agentId)
-              return [agentId, status] as const
+              try {
+                const status = await getTelegramWorkerStatus(agentId)
+                return [agentId, status] as const
+              } catch {
+                return null
+              }
             }),
           ),
         ])
@@ -92,7 +96,9 @@ export function DashboardPage({
         }
 
         setOpenclawHealth(nextOpenclawHealth)
-        setWorkerStatuses(Object.fromEntries(nextWorkerStatuses))
+        setWorkerStatuses(
+          Object.fromEntries(nextWorkerStatuses.filter((item) => item !== null)),
+        )
         setStatusError('')
       } catch (error) {
         if (!cancelled) {
@@ -127,8 +133,12 @@ export function DashboardPage({
         const nextPermissions = await Promise.all(
           agents.map(async (agent) => {
             const agentId = agent.hiveAgentId || agent.id
-            const permissions = await getAgentPermissions(agentId)
-            return [agentId, permissions] as const
+            try {
+              const permissions = await getAgentPermissions(agentId)
+              return [agentId, permissions] as const
+            } catch {
+              return null
+            }
           }),
         )
 
@@ -136,7 +146,9 @@ export function DashboardPage({
           return
         }
 
-        setPermissionsByAgent(Object.fromEntries(nextPermissions))
+        setPermissionsByAgent(
+          Object.fromEntries(nextPermissions.filter((item) => item !== null)),
+        )
         setPermissionError('')
       } catch (error) {
         if (!cancelled) {
