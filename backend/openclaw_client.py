@@ -91,6 +91,7 @@ def generate_agent_reply(
     session: dict[str, Any],
     user_message: str,
     memory_hits: list[dict[str, Any]] | None = None,
+    tool_permissions: dict[str, str] | None = None,
 ) -> str:
     user_name = session.get("user_name", "there")
     agent_name = session.get("agent_name", "HIVE BRAIN")
@@ -104,6 +105,7 @@ def generate_agent_reply(
         goals=goals,
         dumps=dumps,
         memory_hits=memory_hits or [],
+        tool_permissions=tool_permissions or {},
         user_message=user_message,
     )
     return chat_completion(
@@ -191,6 +193,7 @@ def build_agent_reply_prompt(
     goals: list[dict[str, Any]],
     dumps: list[dict[str, Any]],
     memory_hits: list[dict[str, Any]],
+    tool_permissions: dict[str, str],
     user_message: str,
 ) -> str:
     goal_lines = "\n".join(f"- {goal['text']}" for goal in goals[-5:])
@@ -205,6 +208,8 @@ def build_agent_reply_prompt(
     if not memory_lines:
         memory_lines = "- No relevant memory hits found."
 
+    permission_lines = format_tool_permissions(tool_permissions)
+
     return (
         f"Agent: {agent_name}\n"
         f"Role: {agent_role}\n"
@@ -212,11 +217,15 @@ def build_agent_reply_prompt(
         f"Active goals:\n{goal_lines}\n\n"
         f"Recent conversation/context:\n{recent_context_lines}\n\n"
         f"Relevant long-term memory:\n{memory_lines}\n\n"
+        f"Tool permission policy:\n{permission_lines}\n\n"
         f"Incoming Telegram message:\n{user_message}\n\n"
         "Reply naturally in 1-4 short paragraphs. "
         "If the user asks for help, give the next useful step. "
         "If they are sharing information, acknowledge it and connect it to their saved goals when relevant. "
-        "Ask at most one follow-up question."
+        "Ask at most one follow-up question. "
+        "Only use or suggest external tools that are marked allow. "
+        "If a useful tool is marked ask, ask the user to approve it first. "
+        "Never use tools marked deny."
     )
 
 
@@ -246,3 +255,30 @@ def format_mempalace_context(dumps: list[dict[str, Any]]) -> str:
     if not hits:
         return "- No MemPalace hits attached."
     return "\n".join(hits[:3])
+
+
+def format_tool_permissions(tool_permissions: dict[str, str]) -> str:
+    if not tool_permissions:
+        return "- No explicit tool policy attached."
+
+    descriptions = {
+        "memory_read": "read saved memory/context",
+        "memory_write": "write new memory/context",
+        "pulse": "create proactive check-ins",
+        "openclaw_chat": "use OpenClaw model replies",
+        "telegram_send": "send Telegram messages",
+        "brave_search": "search the web through Brave/browser search",
+        "gmail": "read or draft Gmail actions",
+        "calendar": "read or schedule calendar events",
+        "notion": "read or update Notion",
+        "todo": "manage tasks and todos",
+        "notes": "create or update notes",
+        "filesystem": "inspect or modify local files",
+        "browser": "use browser automation",
+        "shell": "run shell commands",
+    }
+    lines = []
+    for tool_name, state in sorted(tool_permissions.items()):
+        description = descriptions.get(tool_name, tool_name)
+        lines.append(f"- {tool_name}: {state} ({description})")
+    return "\n".join(lines)

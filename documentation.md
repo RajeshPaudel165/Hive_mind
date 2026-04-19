@@ -425,10 +425,141 @@ Agent goals go to room `goals`; notes and ingested context go to room `context`.
 
 The old session-code flow is disabled for new creation. Some compatibility routes still exist internally because agent ids use the same underlying memory/pulse functions, but the user-facing flow is now agent-first.
 
+## Cloud Auth and Permissions
+
+The backend now supports Firebase-backed API permissions for the frontend/backend split deployment.
+
+Relevant environment variables:
+
+```env
+HIVE_AUTH_REQUIRED=true
+FIREBASE_PROJECT_ID=your_firebase_project_id
+HIVE_CORS_ORIGINS=https://your-frontend-domain
+```
+
+When auth is enabled, frontend requests must send:
+
+```http
+Authorization: Bearer <firebase_id_token>
+```
+
+The backend verifies the Firebase ID token using Google's secure token certificates and the configured Firebase project id. It then uses the Firebase UID as the canonical owner id for newly created agents.
+
+Protected agent routes:
+
+```text
+GET    /agents
+POST   /agents
+GET    /agents/{agent_id}
+DELETE /agents/{agent_id}
+GET    /agents/{agent_id}/context
+POST   /agents/{agent_id}/ingest
+POST   /agents/{agent_id}/memory/search
+POST   /agents/{agent_id}/memory/backfill
+POST   /agents/{agent_id}/pulse
+GET    /agents/{agent_id}/telegram/status
+POST   /agents/{agent_id}/telegram/start
+POST   /agents/{agent_id}/telegram/stop
+```
+
+Permissions are currently owner-based:
+
+```text
+Firebase user UID -> owns agents whose user_id matches that UID
+```
+
+That means each signed-in user sees and controls only their own agents. If a user tries to access another user's agent id, the backend returns `404 Unknown agent` instead of exposing that the agent exists.
+
+For local development, `HIVE_AUTH_REQUIRED=false` keeps the backend permissive so curl testing and local dashboard work without Firebase tokens.
+
+## Tool Permissions
+
+Each agent now has a tool permission policy stored in backend state.
+
+Default policy:
+
+```text
+memory_read: allow
+memory_write: allow
+pulse: allow
+openclaw_chat: allow
+telegram_send: allow
+brave_search: ask
+gmail: ask
+calendar: ask
+notion: ask
+todo: allow
+notes: allow
+filesystem: deny
+browser: deny
+shell: deny
+```
+
+Allowed states:
+
+```text
+allow
+ask
+deny
+```
+
+`ask` is reserved for the approval queue. Until an approval queue exists, backend actions treat `ask` as blocked.
+
+HTTP control:
+
+```text
+GET /agents/{agent_id}/permissions
+PUT /agents/{agent_id}/permissions
+POST /agents/{agent_id}/permissions/reset
+```
+
+Example update:
+
+```json
+{
+  "permissions": {
+    "memory_read": "deny",
+    "shell": "ask"
+  }
+}
+```
+
+Currently enforced:
+
+```text
+memory_read -> context loading, memory search, Telegram /recall, memory attached to replies
+memory_write -> ingest, goals, backfill, Telegram /goal, /save, saved Telegram messages
+pulse -> pulse previews and Telegram /pulse
+openclaw_chat -> normal Telegram agent replies and OpenClaw-generated pulse text
+brave_search/gmail/calendar/notion/todo/notes -> OpenClaw-style extension intent policy
+```
+
+The dashboard can edit the policy from each agent card. Telegram can edit the same policy with:
+
+```text
+/permission
+/permission allow memory_read
+/permission ask shell
+/permission deny filesystem
+/permission reset
+```
+
+Permission changes append to a per-agent audit list in backend state.
+
+For OpenClaw turns, HIVE now attaches the agent role plus the current tool permission policy to the OpenClaw prompt. This gives the model a clear capability manifest:
+
+```text
+allow -> the agent may use or suggest the capability
+ask -> the agent should ask the user to approve it first
+deny -> the agent must not use the capability
+```
+
+The current integration still talks to OpenClaw through the chat-completions endpoint. That means this is prompt-level control for OpenClaw skills/plugins. Native hard limits should be added next by mapping HIVE permissions into OpenClaw plugin/MCP/approval configuration per agent.
+
 ## Next Steps
 
-1. Connect the teammate webapp to `POST /agents`.
-2. Add a worker manager that can run/pause Telegram workers per agent.
-3. Add Dedalus provisioning for per-agent VM deployment.
-4. Add Chrome extension or browser ingestion.
-5. Replace JSON routing state with SQLite when concurrency matters.
+1. Deploy backend on a stronger DigitalOcean droplet with Docker Compose.
+2. Deploy frontend separately with `VITE_HIVE_API_BASE` pointing at the backend domain.
+3. Add the approval queue for `ask` permissions.
+4. Map HIVE permissions into native OpenClaw plugins/MCP/approvals per agent.
+5. Replace JSON routing state with SQLite/Postgres when concurrency matters.

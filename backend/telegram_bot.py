@@ -84,6 +84,64 @@ def command_body(text: str, command: str) -> str:
     return text.removeprefix(f"{command} ").strip()
 
 
+def permission_state(pairing_code: str, tool_name: str) -> str:
+    return memory_store.get_tool_permission(pairing_code, tool_name)
+
+
+def permission_allows(pairing_code: str, tool_name: str) -> bool:
+    return permission_state(pairing_code, tool_name) == "allow"
+
+
+def permission_denied_message(pairing_code: str, tool_name: str) -> str:
+    state = permission_state(pairing_code, tool_name)
+    if state == "ask":
+        return (
+            f"{tool_name} requires approval. Approval queues are not enabled yet, "
+            "so I will not use it from Telegram."
+        )
+    return f"{tool_name} is denied for this agent."
+
+
+def format_permissions(pairing_code: str) -> str:
+    data = memory_store.get_agent_permissions(pairing_code)
+    permissions = data["tool_permissions"]
+    lines = ["Current tool permissions:"]
+    for tool_name in data["available_tools"]:
+        lines.append(f"- {tool_name}: {permissions[tool_name]}")
+    lines.append("")
+    lines.append("Change one with: /permission allow memory_read")
+    lines.append("States: allow, ask, deny")
+    return "\n".join(lines)
+
+
+def handle_permission(pairing_code: str, body: str) -> str:
+    parts = body.split()
+    if not parts or parts[0] in {"list", "show"}:
+        return format_permissions(pairing_code)
+
+    if parts[0] == "reset":
+        memory_store.reset_agent_permissions(pairing_code, changed_by="telegram")
+        return "Permissions reset to the default policy.\n\n" + format_permissions(pairing_code)
+
+    if len(parts) != 2:
+        return (
+            "Use /permission to view settings, or "
+            "/permission allow|ask|deny <tool>."
+        )
+
+    state, tool_name = parts[0].lower(), parts[1].lower()
+    try:
+        memory_store.update_agent_permissions(
+            pairing_code,
+            {tool_name: state},
+            changed_by="telegram",
+        )
+    except ValueError as exc:
+        return str(exc)
+
+    return f"Updated {tool_name} to {state}.\n\n" + format_permissions(pairing_code)
+
+
 def handle_text(chat_id: str, text: str) -> str:
     clean_text = text.strip()
     if clean_text.startswith("/start"):
@@ -94,6 +152,8 @@ def handle_text(chat_id: str, text: str) -> str:
         return "Send /start to connect this bot to its agent."
 
     if clean_text == "/goal" or clean_text.startswith("/goal "):
+        if not permission_allows(pairing_code, "memory_write"):
+            return permission_denied_message(pairing_code, "memory_write")
         goal_text = command_body(clean_text, "/goal")
         if not goal_text:
             return "Send /goal followed by the goal you want me to remember."
@@ -107,11 +167,18 @@ def handle_text(chat_id: str, text: str) -> str:
         return handle_recall(pairing_code, command_body(clean_text, "/recall"))
 
     if clean_text == "/pulse":
+        if not permission_allows(pairing_code, "pulse"):
+            return permission_denied_message(pairing_code, "pulse")
         pulse = main.create_pulse_preview(pairing_code)
         return pulse["message"]
 
+    if clean_text == "/permission" or clean_text.startswith("/permission "):
+        return handle_permission(pairing_code, command_body(clean_text, "/permission"))
+
     session = main.get_session_or_404(pairing_code)
     if session.get("telegram_awaiting_goal"):
+        if not permission_allows(pairing_code, "memory_write"):
+            return permission_denied_message(pairing_code, "memory_write")
         main.add_goal(pairing_code, main.GoalInput(goal=clean_text))
         mark_awaiting_goal(pairing_code, False)
         return "Saved as your active goal. Send me notes anytime and I will remember them."
@@ -120,10 +187,21 @@ def handle_text(chat_id: str, text: str) -> str:
 
 
 def handle_agent_message(pairing_code: str, clean_text: str) -> str:
-    main.ingest_dump(
-        pairing_code,
-        main.IngestInput(title="Telegram message", text=clean_text),
-    )
+    if permission_allows(pairing_code, "memory_write"):
+        main.ingest_dump(
+            pairing_code,
+            main.IngestInput(title="Telegram message", text=clean_text),
+        )
+    elif not permission_allows(pairing_code, "openclaw_chat"):
+        return (
+            permission_denied_message(pairing_code, "memory_write")
+            + "\n"
+            + permission_denied_message(pairing_code, "openclaw_chat")
+        )
+
+    if not permission_allows(pairing_code, "openclaw_chat"):
+        return permission_denied_message(pairing_code, "openclaw_chat")
+
     session = main.get_session_or_404(pairing_code)
     memory_hits = search_relevant_memory(pairing_code, clean_text)
     openclaw_manager.ensure_running()
@@ -133,6 +211,9 @@ def handle_agent_message(pairing_code: str, clean_text: str) -> str:
             session=session,
             user_message=clean_text,
             memory_hits=memory_hits,
+            tool_permissions=memory_store.get_agent_permissions(pairing_code)[
+                "tool_permissions"
+            ],
         )
     except OpenClawUnavailable as exc:
         return (
@@ -140,7 +221,7 @@ def handle_agent_message(pairing_code: str, clean_text: str) -> str:
             f"{exc}"
         )
 
-    if SAVE_ASSISTANT_REPLIES:
+    if SAVE_ASSISTANT_REPLIES and permission_allows(pairing_code, "memory_write"):
         main.ingest_dump(
             pairing_code,
             main.IngestInput(title="Assistant reply", text=reply),
@@ -150,6 +231,8 @@ def handle_agent_message(pairing_code: str, clean_text: str) -> str:
 
 
 def search_relevant_memory(pairing_code: str, query: str) -> list[dict[str, Any]]:
+    if not permission_allows(pairing_code, "memory_read"):
+        return []
     try:
         results = memory_store.search_memory(pairing_code, query=query, n_results=5)
     except Exception:
@@ -173,6 +256,9 @@ def handle_start(chat_id: str, text: str) -> str:
 
 
 def handle_save(pairing_code: str, body: str) -> str:
+    if not permission_allows(pairing_code, "memory_write"):
+        return permission_denied_message(pairing_code, "memory_write")
+
     if not body:
         return "Send /save followed by the note you want me to remember."
 
@@ -191,6 +277,9 @@ def handle_save(pairing_code: str, body: str) -> str:
 
 
 def handle_recall(pairing_code: str, query: str) -> str:
+    if not permission_allows(pairing_code, "memory_read"):
+        return permission_denied_message(pairing_code, "memory_read")
+
     if not query:
         return "Send /recall followed by what you want me to search for."
 

@@ -1,0 +1,20 @@
+[Unit]
+Description=OpenClaw Gateway for HIVE backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hive
+WorkingDirectory=/home/hive/Hive_mind/Hive_mind/backend
+Environment=HOME=/home/hive
+Environment=OPENCLAW_STATE_DIR=/home/hive/.openclaw
+Environment=OPENCLAW_PORT=18789
+Environment=OPENCLAW_NO_RESPAWN=1
+Environment=PATH=/home/hive/.npm-global/bin:/home/hive/.nvm/versions/node/current/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env openclaw gateway run --auth none --bind loopback --port 18789
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
