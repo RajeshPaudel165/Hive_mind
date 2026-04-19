@@ -12,6 +12,7 @@ import {
 } from 'firebase/auth'
 import {
   collection,
+  deleteDoc,
   doc,
   getDocs,
   getFirestore,
@@ -192,12 +193,24 @@ export async function saveAgentToFirebase(params: {
     doc(db, 'users', userId, 'agents', agent.id),
     {
       id: agent.id,
+      hiveAgentId: agent.hiveAgentId,
+      userId: agent.userId,
       name: agent.name,
       role: agent.role,
+      runtimeProvider: agent.runtimeProvider,
+      runtimeMachineId: agent.runtimeMachineId,
+      runtimeStatus: agent.runtimeStatus,
       botId: agent.botId,
       botUsername: agent.botUsername,
       botToken: agent.botToken,
       deliveryStatus: agent.deliveryStatus,
+      telegramConnectionStatus: agent.telegramConnectionStatus,
+      telegramStartInstruction: agent.telegramStartInstruction,
+      workerCommand: agent.workerCommand,
+      openclawReachable: agent.openclawReachable,
+      openclawPid: agent.openclawPid,
+      workerPid: agent.workerPid,
+      workerLogPath: agent.workerLogPath,
       ownerEmail: userEmail,
       updatedAt: serverTimestamp(),
       createdAt: serverTimestamp(),
@@ -207,6 +220,21 @@ export async function saveAgentToFirebase(params: {
 
   return true
 }
+
+
+export async function deleteAgentFromFirebase(params: {
+  userId: string
+  agentId: string
+}): Promise<boolean> {
+  if (!firebaseApp) {
+    return false
+  }
+
+  const db = getFirestore(firebaseApp)
+  await deleteDoc(doc(db, 'users', params.userId, 'agents', params.agentId))
+  return true
+}
+
 
 export async function loadAgentsFromFirebase(userId: string): Promise<Agent[]> {
   if (!firebaseApp || !userId) {

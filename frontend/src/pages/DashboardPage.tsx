@@ -1,29 +1,93 @@
-import { useState, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Sidebar } from '../components/Sidebar'
 import { Breadcrumb } from '../components/Breadcrumb'
+import {
+  getOpenClawHealth,
+  getTelegramWorkerStatus,
+  type OpenClawHealth,
+  type TelegramWorkerStatus,
+} from '../lib/hiveBackend'
 import type { Agent } from '../types/agent'
 
 type DashboardPageProps = {
   userEmail: string
   agents: Agent[]
   onLogout: () => void
+  onDeleteAgent: (agent: Agent) => Promise<void>
 }
 
 const ITEMS_PER_PAGE = 6
+const STATUS_REFRESH_MS = 5000
 
 export function DashboardPage({
   userEmail,
   agents,
   onLogout,
+  onDeleteAgent,
 }: DashboardPageProps) {
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'connected' | 'disconnected'>('all')
   const [currentPage, setCurrentPage] = useState(1)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [copiedAgentId, setCopiedAgentId] = useState<string | null>(null)
+  const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState('')
+  const [openclawHealth, setOpenclawHealth] = useState<OpenClawHealth | null>(null)
+  const [workerStatuses, setWorkerStatuses] = useState<
+    Record<string, TelegramWorkerStatus>
+  >({})
+  const [statusError, setStatusError] = useState('')
 
   const linkedTokens = agents.filter((agent) => Boolean(agent.botToken)).length
+  const connectedAgents = agents.filter((agent) => {
+    const agentId = agent.hiveAgentId || agent.id
+    const liveStatus = workerStatuses[agentId]
+    return liveStatus ? liveStatus.running : agent.telegramConnectionStatus === 'connected'
+  }).length
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function refreshStatuses() {
+      try {
+        const [nextOpenclawHealth, nextWorkerStatuses] = await Promise.all([
+          getOpenClawHealth(),
+          Promise.all(
+            agents.map(async (agent) => {
+              const agentId = agent.hiveAgentId || agent.id
+              const status = await getTelegramWorkerStatus(agentId)
+              return [agentId, status] as const
+            }),
+          ),
+        ])
+
+        if (cancelled) {
+          return
+        }
+
+        setOpenclawHealth(nextOpenclawHealth)
+        setWorkerStatuses(Object.fromEntries(nextWorkerStatuses))
+        setStatusError('')
+      } catch (error) {
+        if (!cancelled) {
+          setStatusError(
+            error instanceof Error ? error.message : 'Could not refresh live status.',
+          )
+        }
+      }
+    }
+
+    void refreshStatuses()
+    const intervalId = window.setInterval(() => {
+      void refreshStatuses()
+    }, STATUS_REFRESH_MS)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [agents])
 
   const handleCopyName = (name: string, agentId: string) => {
     navigator.clipboard.writeText(name)
@@ -33,6 +97,12 @@ export function DashboardPage({
 
   const handleCopyToken = (token: string, agentId: string) => {
     navigator.clipboard.writeText(token)
+    setCopiedAgentId(agentId)
+    setTimeout(() => setCopiedAgentId(null), 2000)
+  }
+
+  const handleCopyAgentId = (agentId: string) => {
+    navigator.clipboard.writeText(agentId)
     setCopiedAgentId(agentId)
     setTimeout(() => setCopiedAgentId(null), 2000)
   }
@@ -49,10 +119,14 @@ export function DashboardPage({
         return matchesSearch
       }
 
-      const connectionStatus = agent.telegramConnectionStatus || 'disconnected'
+      const agentId = agent.hiveAgentId || agent.id
+      const liveWorkerStatus = workerStatuses[agentId]
+      const connectionStatus = liveWorkerStatus
+        ? liveWorkerStatus.running ? 'connected' : 'disconnected'
+        : agent.telegramConnectionStatus || 'disconnected'
       return matchesSearch && connectionStatus === statusFilter
     })
-  }, [agents, searchQuery, statusFilter])
+  }, [agents, searchQuery, statusFilter, workerStatuses])
 
   // Pagination
   const totalPages = Math.ceil(filteredAgents.length / ITEMS_PER_PAGE)
@@ -71,6 +145,27 @@ export function DashboardPage({
 
   const toggleMobileMenu = () => {
     setSidebarOpen(!sidebarOpen)
+  }
+
+  const handleDeleteAgent = async (agent: Agent) => {
+    const confirmed = window.confirm(
+      `Delete ${agent.name}? This will stop its Telegram worker and remove it from the dashboard.`,
+    )
+    if (!confirmed) {
+      return
+    }
+
+    setDeleteError('')
+    setDeletingAgentId(agent.id)
+    try {
+      await onDeleteAgent(agent)
+    } catch (error) {
+      setDeleteError(
+        error instanceof Error ? error.message : 'Could not delete agent.',
+      )
+    } finally {
+      setDeletingAgentId(null)
+    }
   }
 
   return (
@@ -122,7 +217,7 @@ export function DashboardPage({
               <article className="card stat-card">
                 <p>Connected</p>
                 <strong>
-                  {agents.filter((a) => a.telegramConnectionStatus === 'connected').length}
+                  {connectedAgents}
                 </strong>
               </article>
               <article className="card stat-card">
@@ -181,6 +276,8 @@ export function DashboardPage({
             {/* Agents List */}
             <section className="card agents-card">
               <h2>Available agents</h2>
+              {deleteError && <p className="status status-error">{deleteError}</p>}
+              {statusError && <p className="status status-error">{statusError}</p>}
               {filteredAgents.length === 0 ? (
                 <div className="empty-state">
                   <p className="subtle">
@@ -197,18 +294,39 @@ export function DashboardPage({
               ) : (
                 <>
                   <ul className="agent-grid">
-                    {paginatedAgents.map((agent) => (
+                    {paginatedAgents.map((agent) => {
+                      const agentId = agent.hiveAgentId || agent.id
+                      const workerStatus = workerStatuses[agentId]
+                      const workerRunning =
+                        workerStatus?.running ??
+                        agent.telegramConnectionStatus === 'connected'
+                      const workerPid = workerStatus?.pid ?? agent.workerPid
+                      const openclawReachable =
+                        openclawHealth?.reachable ?? agent.openclawReachable
+
+                      return (
                       <li key={agent.id} className="agent-item">
                         <div className="agent-chip">@{agent.botUsername || 'pending'}</div>
                         <h3>{agent.name}</h3>
                         <p className="agent-role">{agent.role}</p>
                         <div className="agent-status">
+                          <p className="subtle">HIVE ID: {agentId}</p>
+                          <p className="subtle">
+                            Runtime: {agent.runtimeProvider || 'local'}
+                            {agent.runtimeMachineId ? ` / ${agent.runtimeMachineId}` : ''}
+                          </p>
                           <p className="subtle">Bot ID: {agent.botId || 'missing'}</p>
                           <p className="subtle">
                             Bot token: {agent.botToken ? '✓ Linked' : '✕ Not linked'}
                           </p>
                           <p className="subtle">
                             Sent to endpoint: {agent.deliveryStatus === 'sent' ? '✓ Yes' : '✕ No'}
+                          </p>
+                          <p className="subtle">
+                            OpenClaw: {openclawReachable ? '✓ Reachable' : '✕ Not ready'}
+                          </p>
+                          <p className="subtle">
+                            Telegram worker: {workerRunning && workerPid ? `✓ PID ${workerPid}` : '✕ Not running'}
                           </p>
                         </div>
 
@@ -221,6 +339,13 @@ export function DashboardPage({
                           >
                             {copiedAgentId === agent.id ? '✓ Copied' : 'Copy Name'}
                           </button>
+                          <button
+                            className="copy-btn"
+                            onClick={() => handleCopyAgentId(agent.hiveAgentId || agent.id)}
+                            title="Copy HIVE agent ID"
+                          >
+                            {copiedAgentId === agent.id ? '✓ Copied' : 'Copy HIVE ID'}
+                          </button>
                           {agent.botToken && (
                             <button
                               className="copy-btn"
@@ -230,9 +355,18 @@ export function DashboardPage({
                               {copiedAgentId === agent.id ? '✓ Copied' : 'Copy Token'}
                             </button>
                           )}
+                          <button
+                            className="copy-btn"
+                            onClick={() => void handleDeleteAgent(agent)}
+                            disabled={deletingAgentId === agent.id}
+                            title="Delete agent"
+                          >
+                            {deletingAgentId === agent.id ? 'Deleting...' : 'Delete'}
+                          </button>
                         </div>
                       </li>
-                    ))}
+                      )
+                    })}
                   </ul>
 
                   {/* Pagination */}

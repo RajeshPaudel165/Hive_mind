@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getFirebaseWriteErrorMessage, saveAgentToFirebase } from '../lib/firebase'
+import { createHiveAgent } from '../lib/hiveBackend'
 import type { Agent } from '../types/agent'
 
 type CreateAgentPageProps = {
@@ -17,6 +18,7 @@ export function CreateAgentPage({
 }: CreateAgentPageProps) {
   const navigate = useNavigate()
   const [name, setName] = useState('')
+  const [role, setRole] = useState('General assistant')
   const [botToken, setBotToken] = useState('')
   const [status, setStatus] = useState<'idle' | 'saving' | 'error' | 'success'>('idle')
   const [message, setMessage] = useState('')
@@ -25,6 +27,7 @@ export function CreateAgentPage({
     event.preventDefault()
 
     const trimmedName = name.trim()
+    const trimmedRole = role.trim() || 'General assistant'
     const trimmedToken = botToken.trim()
 
     if (!trimmedName || !trimmedToken.includes(':')) {
@@ -40,21 +43,21 @@ export function CreateAgentPage({
       return
     }
 
-    const nextAgent: Agent = {
-      id: crypto.randomUUID(),
-      name: trimmedName,
-      role: 'General assistant',
-      botId,
-      botUsername: '',
-      botToken: trimmedToken,
-      deliveryStatus: 'sent',
-    }
-
     setStatus('saving')
-    setMessage('Saving agent token to Firebase...')
+    setMessage('Creating agent in HIVE backend...')
 
     void (async () => {
       try {
+        const nextAgent: Agent = await createHiveAgent({
+          userId,
+          userEmail,
+          agentName: trimmedName,
+          agentRole: trimmedRole,
+          telegramBotToken: trimmedToken,
+        })
+
+        setMessage('Agent created in HIVE. Saving a dashboard copy to Firebase...')
+
         try {
           const firebaseSaved = await saveAgentToFirebase({
             userId,
@@ -64,10 +67,12 @@ export function CreateAgentPage({
 
           if (!firebaseSaved) {
             setStatus('error')
-            setMessage('Firebase is not configured. Check Firebase env values.')
+            setMessage(
+              'Agent was created in HIVE, but Firebase is not configured. Check Firebase env values.',
+            )
             return
           } else {
-            setMessage('Agent token uploaded to Firebase successfully.')
+            setMessage('Agent created and saved successfully.')
           }
         } catch (error) {
           setStatus('error')
@@ -104,10 +109,10 @@ export function CreateAgentPage({
           <section className="hero-panel">
             <div>
               <p className="eyebrow">Telegram manual flow</p>
-              <h1>Create in Telegram, then upload token here.</h1>
+              <h1>Create in Telegram, then connect it to HIVE.</h1>
               <p className="hero-copy">
                 You create the bot yourself in BotFather. This page only captures the token
-                and uploads bot ID and token into Firebase for your account.
+                and sends it to HIVE so your agent can reply through Telegram.
               </p>
             </div>
 
@@ -116,7 +121,7 @@ export function CreateAgentPage({
               <ol>
                 <li>Open BotFather and run /newbot.</li>
                 <li>Copy the token BotFather gives you.</li>
-                <li>Paste token here and save to Firebase.</li>
+                <li>Paste token here and create the HIVE agent.</li>
               </ol>
             </div>
 
@@ -133,8 +138,8 @@ export function CreateAgentPage({
           <p className="eyebrow dark-eyebrow">Create Agent</p>
           <h1>New bot setup</h1>
           <p className="subtle">
-            Logged in as {userEmail}. After save, token and bot ID will be written to
-            Firebase under your user account.
+            Logged in as {userEmail}. After save, HIVE will create the agent and the
+            dashboard will keep a copy under your user account.
           </p>
 
           <div className="cta-row">
@@ -150,6 +155,15 @@ export function CreateAgentPage({
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 placeholder="Support Wingman"
+              />
+            </label>
+
+            <label>
+              Agent role
+              <textarea
+                value={role}
+                onChange={(event) => setRole(event.target.value)}
+                placeholder="Help me learn Fourier Analysis and keep me accountable."
               />
             </label>
 
@@ -171,6 +185,7 @@ export function CreateAgentPage({
               type="button"
               onClick={() => {
                 setName('')
+                setRole('General assistant')
                 setBotToken('')
                 setMessage('')
                 setStatus('idle')

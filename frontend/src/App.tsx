@@ -6,6 +6,7 @@ import {
   saveAgentsToStorage,
 } from './lib/storage'
 import {
+  deleteAgentFromFirebase,
   loadAgentsFromFirebase,
   loginWithEmailPassword,
   logoutFromFirebase,
@@ -18,6 +19,7 @@ import { LandingPage } from './pages/LandingPage'
 import { LoginPage } from './pages/LoginPage'
 import { SettingsProfilePage } from './pages/SettingsProfilePage'
 import { SettingsAPIPage } from './pages/SettingsAPIPage'
+import { deleteHiveAgent } from './lib/hiveBackend'
 import type { Agent } from './types/agent'
 import './App.css'
 
@@ -78,6 +80,13 @@ function App() {
     setAgents((current) => [newAgent, ...current])
   }
 
+  const handleDeleteAgent = async (agent: Agent) => {
+    const agentId = agent.hiveAgentId || agent.id
+    await deleteHiveAgent(agentId)
+    await deleteAgentFromFirebase({ userId, agentId: agent.id })
+    setAgents((current) => current.filter((item) => item.id !== agent.id))
+  }
+
   if (!authReady) {
     return (
       <div className="page-bg">
@@ -111,6 +120,7 @@ function App() {
               userEmail={userEmail}
               agents={agents}
               onLogout={handleLogout}
+              onDeleteAgent={handleDeleteAgent}
             />
           </ProtectedRoute>
         }
