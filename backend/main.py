@@ -195,6 +195,22 @@ def delete_user_runtime(user_id: str) -> dict[str, Any]:
     return dedalus_runtime.destroy_user_runtime(user_id)
 
 
+@app.post("/users/{user_id}/runtime/bootstrap")
+def bootstrap_user_runtime(user_id: str) -> dict[str, Any]:
+    try:
+        return dedalus_runtime.start_user_runtime_bootstrap(user_id)
+    except dedalus_runtime.DedalusRuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/users/{user_id}/runtime/bootstrap")
+def get_user_runtime_bootstrap(user_id: str) -> dict[str, Any]:
+    try:
+        return dedalus_runtime.get_user_runtime_bootstrap_status(user_id)
+    except dedalus_runtime.DedalusRuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.get("/")
 def root() -> dict[str, Any]:
     return {
@@ -214,6 +230,8 @@ def root() -> dict[str, Any]:
             "user_runtime": "GET /users/{user_id}/runtime",
             "ensure_user_runtime": "POST /users/{user_id}/runtime/ensure",
             "delete_user_runtime": "DELETE /users/{user_id}/runtime",
+            "bootstrap_user_runtime": "POST /users/{user_id}/runtime/bootstrap",
+            "bootstrap_status": "GET /users/{user_id}/runtime/bootstrap",
             "list_agents": "GET /agents",
             "create_agent": "POST /agents",
             "get_agent": "GET /agents/{agent_id}",

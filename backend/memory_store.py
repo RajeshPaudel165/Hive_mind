@@ -47,8 +47,10 @@ def load_state() -> dict[str, Any]:
 
 def save_state(state: dict[str, Any]) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with STATE_PATH.open("w", encoding="utf-8") as handle:
-        json.dump(state, handle, indent=2, sort_keys=True)
+    payload = json.dumps(state, indent=2, sort_keys=True, default=str)
+    temp_path = STATE_PATH.with_suffix(f"{STATE_PATH.suffix}.tmp")
+    temp_path.write_text(payload, encoding="utf-8")
+    temp_path.replace(STATE_PATH)
 
 
 def create_session(user_name: str) -> dict[str, Any]:

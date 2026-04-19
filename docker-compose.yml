@@ -1,0 +1,24 @@
+services:
+  hive-backend:
+    build:
+      context: ./backend
+    container_name: hive-backend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8010:8010"
+    env_file:
+      - ./backend/.env
+    environment:
+      HIVE_RUNTIME_MODE: local
+      HIVE_STATE_PATH: /app/data/hive_state.json
+      HIVE_MEMPALACE_PATH: /app/data/mempalace
+      HIVE_OPENCLAW_BOOTSTRAP_STATUS: deferred
+      OPENCLAW_URL: http://host.docker.internal:18789/v1/chat/completions
+      OPENCLAW_HEALTH_URL: http://host.docker.internal:18789/
+    volumes:
+      - hive_backend_data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  hive_backend_data:

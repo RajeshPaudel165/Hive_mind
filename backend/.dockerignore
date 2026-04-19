@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+data/
+*.log
+openclaw_logs/
+telegram_worker_logs/
+telegram_worker_pids/
+test_*.py
+check_sdk.py

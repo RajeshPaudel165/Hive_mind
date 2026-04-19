@@ -89,6 +89,12 @@ DEDALUS_ORG_ID=
 DEDALUS_MACHINE_VCPU=1
 DEDALUS_MACHINE_MEMORY_MIB=2048
 DEDALUS_MACHINE_STORAGE_GIB=10
+DEDALUS_BOOTSTRAP_TIMEOUT_MS=1800000
+DEDALUS_BOOTSTRAP_PREVIEW_VISIBILITY=private
+HIVE_REPO_URL=https://github.com/your-org/your-repo.git
+DEDALUS_HOME=/home/machine
+HIVE_REMOTE_APP_DIR=/home/machine/hive-brain
+HIVE_BACKEND_SUBDIR=backend
 
 OPENCLAW_URL=http://127.0.0.1:18789/v1/chat/completions
 OPENCLAW_HEALTH_URL=http://127.0.0.1:18789/
@@ -172,6 +178,8 @@ GET  /runtimes
 GET  /users/{user_id}/runtime
 POST /users/{user_id}/runtime/ensure
 DELETE /users/{user_id}/runtime
+POST /users/{user_id}/runtime/bootstrap
+GET  /users/{user_id}/runtime/bootstrap
 ```
 
 Agents:
@@ -280,11 +288,11 @@ If OpenClaw succeeds:
 "delivery": "openclaw_preview"
 ```
 
-## Dedalus User Runtimes
+## User Runtimes
 
-The backend now has a control-plane layer for one isolated runtime per `user_id`.
+The backend has a control-plane layer for one runtime record per `user_id`.
 
-In local development:
+Use local runtime mode for the current product path:
 
 ```env
 HIVE_RUNTIME_MODE=local
@@ -292,7 +300,9 @@ HIVE_RUNTIME_MODE=local
 
 Agent creation records a local runtime and continues to run OpenClaw and Telegram workers on the current machine.
 
-For Dedalus provisioning:
+Dedalus provisioning is currently experimental. Provisioning works, but bootstrap has been unreliable in the VM environment because of filesystem ownership, read-only temp paths, package cache I/O errors, and toolchain install behavior. Do not block core agent/dashboard work on Dedalus.
+
+For future Dedalus testing:
 
 ```env
 HIVE_RUNTIME_MODE=dedalus
@@ -310,7 +320,84 @@ POST /users/{user_id}/runtime/ensure
 
 creates or returns that user's Dedalus Machine runtime. `POST /agents` also ensures the user runtime when `user_id` is provided.
 
-The VM bootstrap template is:
+After the machine is running:
+
+```text
+POST /users/{user_id}/runtime/bootstrap
+```
+
+starts a step-by-step Dedalus bootstrap. The control-plane runs named VM executions so each failure reports the exact phase that failed. Current order:
+
+```text
+fix-home-ownership
+prepare-uv-directories
+install-uv
+prepare-runtime-directories
+clone-or-update-repo
+install-python-requirements
+install-node-if-missing
+install-openclaw
+configure-openclaw
+write-hive-env
+start-openclaw
+start-hive-backend
+verify-hive-backend
+```
+
+The first step runs:
+
+```bash
+sudo chown -R machine:machine /home/machine
+```
+
+This fixes ownership only; it does not create missing directories. The next step creates only the directories needed by the official `uv` installer:
+
+```bash
+mkdir -p /home/machine/.tmp /home/machine/.local/bin /home/machine/.cargo/bin
+```
+
+`/home/machine/.tmp` is required because Dedalus can expose `/tmp` as read-only, and the bootstrap exports:
+
+```bash
+TMPDIR=/home/machine/.tmp
+```
+
+The `install-uv` step then runs:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source "$HOME/.local/bin/env"
+```
+
+The Python dependency step uses the VM's existing Python and disables uv-managed Python downloads:
+
+```bash
+export UV_PYTHON_DOWNLOADS=never
+uv venv .venv --python /usr/bin/python3
+uv pip install --refresh --python .venv/bin/python -r requirements.txt
+```
+
+Runtime directories are created after uv is installed:
+
+```text
+/home/machine/.npm-global
+/home/machine/.npm-cache
+/home/machine/.uv-cache
+/home/machine/.openclaw
+/home/machine/.compile-cache
+/home/machine/.hive-logs
+/home/machine/.hive-run
+```
+
+Poll bootstrap status with:
+
+```text
+GET /users/{user_id}/runtime/bootstrap
+```
+
+When bootstrap succeeds, HIVE creates a Dedalus preview for port `8010` and stores the returned `runtime_url`. If a step fails, the runtime record includes `bootstrap_steps`, `bootstrap_execution`, and `bootstrap_output` so the failed phase is visible directly from the status endpoint.
+
+The fallback VM bootstrap script is:
 
 ```text
 /home/nobay/Hive_mind/Hive_mind/backend/scripts/dedalus_vm_bootstrap.sh

@@ -14,6 +14,7 @@ BACKEND_DIR = Path(__file__).resolve().parent
 SCRIPT_PATH = BACKEND_DIR / "scripts" / "openclaw_local_start.sh"
 LOG_DIR = BACKEND_DIR / "data" / "openclaw_logs"
 PID_PATH = BACKEND_DIR / "data" / "openclaw_gateway.pid"
+OPENCLAW_BOOTSTRAP_STATUS = os.getenv("HIVE_OPENCLAW_BOOTSTRAP_STATUS", "installed")
 _process: subprocess.Popen[bytes] | None = None
 
 
@@ -45,6 +46,13 @@ def ensure_running(timeout_seconds: float = 20) -> dict[str, Any]:
     status = get_status()
     if status.get("reachable"):
         return {**status, "started": False, "message": "OpenClaw already reachable."}
+    if OPENCLAW_BOOTSTRAP_STATUS == "deferred":
+        return {
+            **status,
+            "started": False,
+            "deferred": True,
+            "message": "OpenClaw install was deferred because node/npm were unavailable.",
+        }
 
     start_status = start_gateway(wait=False)
     ready_status = wait_until_reachable(timeout_seconds=timeout_seconds)
