@@ -5,7 +5,7 @@ services:
     container_name: hive-backend
     restart: unless-stopped
     ports:
-      -"8010:8010"
+      - "8010:8010"
     env_file:
       - ./backend/.env
     environment:
