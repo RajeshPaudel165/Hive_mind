@@ -118,7 +118,7 @@ function App() {
       <Route
         path="/dashboard"
         element={
-          <ProtectedRoute isLoggedIn={isLoggedIn}>
+          <ProtectedRoute isLoggedIn={isLoggedIn} authReady={authReady}>
             <DashboardPage
               userEmail={userEmail}
               agents={agents}
@@ -131,7 +131,7 @@ function App() {
       <Route
         path="/agents/new"
         element={
-          <ProtectedRoute isLoggedIn={isLoggedIn}>
+          <ProtectedRoute isLoggedIn={isLoggedIn} authReady={authReady}>
             <CreateAgentPage
               userId={userId}
               userEmail={userEmail}
@@ -143,7 +143,7 @@ function App() {
       <Route
         path="/settings/profile"
         element={
-          <ProtectedRoute isLoggedIn={isLoggedIn}>
+          <ProtectedRoute isLoggedIn={isLoggedIn} authReady={authReady}>
             <SettingsProfilePage
               userEmail={userEmail}
               onLogout={handleLogout}
@@ -154,7 +154,7 @@ function App() {
       <Route
         path="/settings/api"
         element={
-          <ProtectedRoute isLoggedIn={isLoggedIn}>
+          <ProtectedRoute isLoggedIn={isLoggedIn} authReady={authReady}>
             <SettingsAPIPage
               userEmail={userEmail}
               onLogout={handleLogout}
