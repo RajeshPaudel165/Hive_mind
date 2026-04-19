@@ -1,6 +1,7 @@
 fastapi==0.109.2
 uvicorn==0.27.1
-pydantic==2.6.1
+pydantic>=2.7.0,<3
 httpx==0.26.0
 python-dotenv==1.0.1
 dedalus-sdk>=0.0.4
+git+https://github.com/MemPalace/mempalace.git@74a31b70d3b527e3aeffff8e54ce3808543b9a4b
