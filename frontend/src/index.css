@@ -1,0 +1,48 @@
+@import url('https://fonts.googleapis.com/css2?family=Chivo:wght@400;700;800&family=Sora:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg-page: #eaf3f7;
+  --text-main: #0f2431;
+  --font-heading: 'Chivo', 'Trebuchet MS', sans-serif;
+  --font-body: 'Sora', 'Tahoma', sans-serif;
+
+  font-family: var(--font-body);
+  line-height: 1.4;
+  font-weight: 400;
+  color: var(--text-main);
+  background-color: var(--bg-page);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 8% 10%, rgba(255, 132, 70, 0.18), transparent 40%),
+    radial-gradient(circle at 88% 0%, rgba(0, 146, 199, 0.18), transparent 32%),
+    radial-gradient(circle at 50% 100%, rgba(17, 161, 122, 0.08), transparent 28%),
+    linear-gradient(180deg, #edf6fa 0%, #deebf2 100%);
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-heading);
+}
+
+button,
+input,
+a {
+  font: inherit;
+}
